@@ -129,19 +129,19 @@ func (w *logMsgWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-// For use by the daemon: return the writer that should be used for logging
-// status messages while in the process of starting up. The writer must not be
-// written to after calling SignalOutcome.
+// For use by the daemon: the writer that should be used for logging status
+// messages while in the process of starting up. The writer must not be written
+// to after calling SignalOutcome.
 //
 // Set to a reasonable default if the process wasn't invoked by a call to Run.
-func StatusWriter() (w io.Writer) {
-	if gGobEncoder == nil {
-		w = os.Stderr
-		return
-	}
+var StatusWriter io.Writer
 
-	w = &logMsgWriter{}
-	return
+func init() {
+	if gGobEncoder != nil {
+		StatusWriter = &logMsgWriter{}
+	} else {
+		StatusWriter = os.Stderr
+	}
 }
 
 // Invoke the daemon with the supplied arguments, waiting until it successfully
