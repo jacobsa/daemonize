@@ -36,18 +36,17 @@ import (
 )
 
 // The name of an environment variable used to communicate a file descriptor
-// set up by Mount to the gcsfuse subprocess. Gob encoding is used to
-// communicate back to Mount.
-const envVar = "MOUNT_STATUS_FD"
+// set up by Run to the daemon process. Gob encoding is used to communicate
+// back to Run.
+const envVar = "DAEMONIZE_STATUS_FD"
 
-// A message containing logging output for the process of mounting the file
-// system.
+// A message containing logging output while starting the daemon.
 type logMsg struct {
 	Msg []byte
 }
 
-// A message indicating the outcome of the process of mounting the file system.
-// The receiver ignores further messages.
+// A message indicating the outcome of starting the daemon. The receiver
+// ignores further messages.
 type outcomeMsg struct {
 	Successful bool
 
@@ -91,12 +90,8 @@ func sendMsg(msg interface{}) (err error) {
 	return
 }
 
-// For use by gcsfuse: signal that mounting was successful (allowing the caller
-// of the process to return in success) or that there was a failure to mount
-// the file system (allowing the caller of the process to display an
-// appropriate error message).
-//
-// Do nothing if the process wasn't invoked with Mount.
+// For use by the daemon: signal an outcome back to Run in the invoking tool,
+// causing it to return. Do nothing if the process wasn't invoked with Run.
 func SignalOutcome(outcome error) (err error) {
 	// Is there anything to do?
 	if gGobEncoder == nil {
@@ -135,10 +130,11 @@ func (w *logMsgWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-// For use by gcsfuse: return a writer that should be used for logging status
-// messages while in the process of mounting.
+// For use by the daemon: return the writer that should be used for logging
+// status messages while in the process of starting up. The writer must not be
+// written to after calling SignalOutcome.
 //
-// The returned writer must not be written to after calling SignalOutcome.
+// Set to a reasonable default if the process wasn't invoked by a call to Run.
 func StatusWriter() (w io.Writer) {
 	if gGobEncoder == nil {
 		w = os.Stderr
@@ -149,11 +145,11 @@ func StatusWriter() (w io.Writer) {
 	return
 }
 
-// Invoke gcsfuse with the supplied arguments, waiting until it successfully
-// mounts or reports that is has failed. Write status updates while mounting
+// Invoke the daemon with the supplied arguments, waiting until it successfully
+// starts up or reports that is has failed. Write status updates while starting
 // into the supplied writer (which may be nil for silence). Return nil only if
-// it mounts successfully.
-func Mount(
+// it starts successfully.
+func Run(
 	gcsfusePath string,
 	fusermountPath string,
 	args []string,
