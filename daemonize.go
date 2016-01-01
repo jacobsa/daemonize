@@ -12,10 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Helper code for daemonizing gcsfuse, synchronizing on successful mount.
+// Helper code for starting a daemon process.
 //
-// The details of this package are subject to change.
-package daemon
+// This package assumes that the user invokes a tool, which invokes a daemon
+// process. Though the tool starts the daemon process with stdin, stdout, and
+// stderr closed (using Run), the daemon should be able to communicate status
+// to the user while it starts up (using StatusWriter), causing the tool to
+// exit in success or failure only when it is clear whether the daemon has
+// sucessfully started (which it signal using SignalOutcome).
+package daemonize
 
 import (
 	"encoding/gob"
