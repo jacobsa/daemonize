@@ -14,30 +14,33 @@
 
 // Helper code for starting a daemon process.
 //
-// This package assumes that the user invokes a tool, which invokes a daemon
-// process. Though the tool starts the daemon process with stdin, stdout, and
-// stderr closed (using Run), the daemon should be able to communicate status
-// to the user while it starts up (using StatusWriter), causing the tool to
+// This package provides the convenience for writing a tool that spins itself
+// off as a daemon process. The daemon should be able to communicate status
+// to the user while it starts up, causing the invoking process to
 // exit in success or failure only when it is clear whether the daemon has
 // sucessfully started (which it signal using SignalOutcome).
 package daemonize
 
 import (
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"os"
 	"os/exec"
-	"strconv"
+	"path/filepath"
 	"syscall"
+
+	"github.com/kardianos/osext"
 )
 
-// The name of an environment variable used to communicate a file descriptor
+// The name of an environment variable used to communicate a unix socket
 // set up by Run to the daemon process. Gob encoding is used to communicate
 // back to Run.
-const envVar = "DAEMONIZE_STATUS_FD"
+const envVar = "DAEMONIZE_STATUS_ADDR"
 
 // A message containing logging output while starting the daemon.
 type logMsg struct {
@@ -53,34 +56,26 @@ type outcomeMsg struct {
 	ErrorMsg string
 }
 
-func init() {
-	gob.Register(logMsg{})
-	gob.Register(outcomeMsg{})
-}
-
-// The file provded to this process via the environment variable, or nil if
-// none.
-var gFile *os.File
-
-// A gob encoder that writes into gFile, or nil.
+// A gob encoder to write back to the parent process
 var gGobEncoder *gob.Encoder
 
 func init() {
+	gob.Register(logMsg{})
+	gob.Register(outcomeMsg{})
+
 	// Is the environment variable set?
-	fdStr, ok := os.LookupEnv(envVar)
+	addr, ok := os.LookupEnv(envVar)
 	if !ok {
 		return
 	}
 
 	// Parse the file descriptor.
-	fd, err := strconv.ParseUint(fdStr, 10, 32)
+	conn, err := net.Dial("unix", addr)
 	if err != nil {
-		log.Fatalf("Couldn't parse %s value %q: %v", envVar, fdStr, err)
+		log.Fatalf("Couldn't connect to %v : %v", addr, err)
 	}
 
-	// Set up the file and the encoder that wraps it.
-	gFile = os.NewFile(uintptr(fd), envVar)
-	gGobEncoder = gob.NewEncoder(gFile)
+	gGobEncoder = gob.NewEncoder(conn)
 }
 
 // Send the supplied message as an interface{}, matching the decoder.
@@ -129,47 +124,42 @@ func (w *logMsgWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-// For use by the daemon: the writer that should be used for logging status
-// messages while in the process of starting up. The writer must not be written
-// to after calling SignalOutcome.
-//
-// Set to a reasonable default if the process wasn't invoked by a call to Run.
-var StatusWriter io.Writer
-
-func init() {
-	if gGobEncoder != nil {
-		StatusWriter = &logMsgWriter{}
-	} else {
-		StatusWriter = os.Stderr
-	}
-}
-
 // Invoke the daemon with the supplied arguments, waiting until it successfully
 // starts up or reports that is has failed. Write status updates while starting
 // into the supplied writer (which may be nil for silence). Return nil only if
 // it starts successfully.
-func Run(
-	path string,
-	args []string,
-	env []string,
-	status io.Writer) (err error) {
+func Run(args []string, status io.Writer) (err error) {
+	if _, envAddr := os.LookupEnv(envVar); envAddr {
+		return errors.New("Can't nest calls to daemonize.Run")
+	}
 	if status == nil {
 		status = ioutil.Discard
+	} else {
+		// wrap stdout and stderr so that we don't write to those once the parent process exits
+		status = &passThroughWriter{status}
 	}
 
-	// Set up the pipe that we will hand to the daemon.
-	pipeR, pipeW, err := os.Pipe()
+	// Set up the socket that we will hand to the daemon.
+	dir, err := ioutil.TempDir("", "daemonize")
 	if err != nil {
-		err = fmt.Errorf("Pipe: %v", err)
-		return
+		log.Fatal("Error starting server: ", err)
 	}
+	defer os.RemoveAll(dir)
+
+	addr := filepath.Join(dir, "daemon.sock")
+	listener, err := net.Listen("unix", addr)
+	if err != nil {
+		log.Fatal("Error starting server: ", err)
+	}
+	defer listener.Close()
+
+	os.Setenv(envVar, addr)
 
 	// Attempt to start the daemon process. If we encounter an error in so doing,
 	// write it to the channel.
 	startProcessErr := make(chan error, 1)
 	go func() {
-		defer pipeW.Close()
-		err := startProcess(path, args, env, pipeW)
+		err := startProcess(args, status)
 		if err != nil {
 			startProcessErr <- err
 		}
@@ -179,8 +169,13 @@ func Run(
 	// channel only if the startup succeeds.
 	readFromProcessOutcome := make(chan error, 1)
 	go func() {
-		defer pipeR.Close()
-		readFromProcessOutcome <- readFromProcess(pipeR, status)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				log.Fatal("Error listening for connection:", err)
+			}
+			readFromProcessOutcome <- readFromProcess(conn, status)
+		}
 	}()
 
 	// Wait for a result from one of the above.
@@ -200,36 +195,29 @@ func Run(
 	}
 }
 
-// Start the daemon process, handing it the supplied pipe for communication. Do
+// Start the daemon process and do
 // not wait for it to return.
-func startProcess(
-	path string,
-	args []string,
-	env []string,
-	pipeW *os.File) (err error) {
-	cmd := exec.Command(path)
-	cmd.Args = append(cmd.Args, args...)
-	cmd.Env = append(cmd.Env, env...)
-	cmd.ExtraFiles = []*os.File{pipeW}
+func startProcess(args []string, status io.Writer) error {
 
-	// Change working directories so that we don't prevent unmounting of the
-	// volume of our current working directory.
-	cmd.Dir = "/"
+	// TODO: drop osext dependency once minmum required go verison is 1.8
+	// path, err := os.Executable()
+	path, err := osext.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(path)
+	cmd.Stdout = status
+	cmd.Args = append(cmd.Args, args...)
 
 	// Call setsid after forking in order to avoid being killed when the user
 	// logs out.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
-	}
-
-	// Send along the write end of the pipe.
-	cmd.Env = append(cmd.Env, fmt.Sprintf("%s=3", envVar))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	// Start. Clean up in the background, ignoring errors.
 	err = cmd.Start()
 	go cmd.Wait()
 
-	return
+	return err
 }
 
 // Process communication from a daemon subprocess. Write log messages to the
@@ -271,4 +259,14 @@ func readFromProcess(
 			return
 		}
 	}
+}
+
+// this is used to avoid assigning stdout or stderr directly to os/exec.Cmd's Stdout, which would produce output
+// even after the launching process has ended
+type passThroughWriter struct {
+	io.Writer
+}
+
+func (w *passThroughWriter) Write(p []byte) (n int, err error) {
+	return w.Writer.Write(p)
 }
