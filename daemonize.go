@@ -34,6 +34,8 @@ import (
 	"syscall"
 )
 
+const ProgrammeName string = "gcsfuse"
+
 // The name of an environment variable used to communicate a file descriptor
 // set up by Run to the daemon process. Gob encoding is used to communicate
 // back to Run.
@@ -152,7 +154,7 @@ func Run(
 	path string,
 	args []string,
 	env []string,
-	status io.Writer) (err error) {
+	status io.Writer, errLog ...io.Writer) (err error) {
 	if status == nil {
 		status = ioutil.Discard
 	}
@@ -169,7 +171,12 @@ func Run(
 	startProcessErr := make(chan error, 1)
 	go func() {
 		defer pipeW.Close()
-		err := startProcess(path, args, env, pipeW)
+		if len(errLog) > 0 {
+			err = startProcess(path, args, env, pipeW, errLog[0])
+		} else {
+			err = startProcess(path, args, env, pipeW)
+		}
+
 		if err != nil {
 			startProcessErr <- err
 		}
@@ -206,11 +213,15 @@ func startProcess(
 	path string,
 	args []string,
 	env []string,
-	pipeW *os.File) (err error) {
+	pipeW *os.File,
+	errLog ...io.Writer) (err error) {
 	cmd := exec.Command(path)
 	cmd.Args = append(cmd.Args, args...)
 	cmd.Env = append(cmd.Env, env...)
 	cmd.ExtraFiles = []*os.File{pipeW}
+	if len(errLog) > 0 {
+		cmd.Stderr = errLog[0]
+	}
 
 	// Change working directories so that we don't prevent unmounting of the
 	// volume of our current working directory.
