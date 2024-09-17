@@ -146,13 +146,18 @@ func init() {
 
 // Invoke the daemon with the supplied arguments, waiting until it successfully
 // starts up or reports that is has failed. Write status updates while starting
-// into the supplied writer (which may be nil for silence). Return nil only if
-// it starts successfully.
+// into the supplied writer (which may be nil for silence).
+//
+// Stderr for the daemon will be connected to the supplied file, which may be
+// nil.
+//
+// nil will be returned only if the daemon starts successfully.
 func Run(
 	path string,
 	args []string,
 	env []string,
-	status io.Writer) (err error) {
+	status io.Writer,
+	stderr *os.File) (err error) {
 	if status == nil {
 		status = ioutil.Discard
 	}
@@ -169,7 +174,7 @@ func Run(
 	startProcessErr := make(chan error, 1)
 	go func() {
 		defer pipeW.Close()
-		err := startProcess(path, args, env, pipeW)
+		err = startProcess(path, args, env, pipeW, stderr)
 		if err != nil {
 			startProcessErr <- err
 		}
@@ -206,11 +211,13 @@ func startProcess(
 	path string,
 	args []string,
 	env []string,
-	pipeW *os.File) (err error) {
+	pipeW *os.File,
+	stderr *os.File) (err error) {
 	cmd := exec.Command(path)
 	cmd.Args = append(cmd.Args, args...)
 	cmd.Env = append(cmd.Env, env...)
 	cmd.ExtraFiles = []*os.File{pipeW}
+	cmd.Stderr = stderr
 
 	// Change working directories so that we don't prevent unmounting of the
 	// volume of our current working directory.
