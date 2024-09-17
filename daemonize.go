@@ -207,12 +207,12 @@ func startProcess(
 	args []string,
 	env []string,
 	pipeW *os.File,
-	stdErr *os.File) (err error) {
+	stderr *os.File) (err error) {
 	cmd := exec.Command(path)
 	cmd.Args = append(cmd.Args, args...)
 	cmd.Env = append(cmd.Env, env...)
 	cmd.ExtraFiles = []*os.File{pipeW}
-	cmd.Stderr = stdErr
+	cmd.Stderr = stderr
 
 	// Change working directories so that we don't prevent unmounting of the
 	// volume of our current working directory.
