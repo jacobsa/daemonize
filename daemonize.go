@@ -146,13 +146,18 @@ func init() {
 
 // Invoke the daemon with the supplied arguments, waiting until it successfully
 // starts up or reports that is has failed. Write status updates while starting
-// into the supplied writer (which may be nil for silence). Return nil only if
-// it starts successfully.
+// into the supplied writer (which may be nil for silence).
+//
+// Stderr for the daemon will be connected to the supplied file, which may be
+// nil.
+//
+// nil will be returned only if the daemon starts successfully.
 func Run(
 	path string,
 	args []string,
 	env []string,
-	status io.Writer, stderr *os.File) (err error) {
+	status io.Writer,
+	stderr *os.File) (err error) {
 	if status == nil {
 		status = ioutil.Discard
 	}
